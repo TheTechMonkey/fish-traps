@@ -1,29 +1,30 @@
 package com.tech_monkey.fishtraps.registry;
 
 import com.tech_monkey.fishtraps.FishTraps;
-import net.fabricmc.fabric.api.itemgroup.v1.FabricItemGroup;
-import net.minecraft.item.ItemGroup;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.registry.Registry;
-import net.minecraft.text.Text;
-import net.minecraft.util.Identifier;
+import net.fabricmc.fabric.api.creativetab.v1.FabricCreativeModeTab;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.item.CreativeModeTab;
+import net.minecraft.world.item.ItemStack;
 
 public final class ModItemGroups {
-    private ModItemGroups() {}
+    private ModItemGroups() {
+    }
 
-    public static final Identifier FISH_TRAPS_TAB_ID = Identifier.of(FishTraps.MOD_ID, "fish_traps");
+    public static final Identifier FISH_TRAPS_TAB_ID = Identifier.fromNamespaceAndPath(FishTraps.MOD_ID, "fish_traps");
 
-    public static final ItemGroup FISH_TRAPS_TAB = Registry.register(
-            Registries.ITEM_GROUP,
+    public static final CreativeModeTab FISH_TRAPS_TAB = Registry.register(
+            BuiltInRegistries.CREATIVE_MODE_TAB,
             FISH_TRAPS_TAB_ID,
-            FabricItemGroup.builder()
-                    .displayName(Text.translatable("itemGroup.fishtraps.fish_traps"))
-					// Use the registered BlockItem (avoids creating an empty stack if the BlockItem isn't present).
-					.icon(() -> new ItemStack(ModBlocks.FISH_TRAP.asItem()))
-					.entries((displayContext, entries) -> entries.add(new ItemStack(ModBlocks.FISH_TRAP.asItem(), 1)))
+            FabricCreativeModeTab.builder()
+                    .title(Component.translatable("itemGroup.fishtraps.fish_traps"))
+                    .icon(() -> new ItemStack(ModBlocks.FISH_TRAP_ITEM))
+                    .displayItems((parameters, output) -> output.accept(ModBlocks.FISH_TRAP_ITEM))
                     .build()
     );
 
-    public static void register() {}
+    public static void register() {
+    }
 }

@@ -6,10 +6,6 @@ pluginManagement {
     }
 }
 
-plugins {
-    id "fabric-loom" version "1.14.8"
-}
-
 dependencyResolutionManagement {
     // Force Gradle to use repositories from settings
     repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)

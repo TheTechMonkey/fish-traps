@@ -1,86 +1,64 @@
 package com.tech_monkey.fishtraps.blockentity;
 
+import com.tech_monkey.fishtraps.FishTraps;
+import com.tech_monkey.fishtraps.block.FishTrapBlock;
 import com.tech_monkey.fishtraps.registry.ModBlockEntities;
 import com.tech_monkey.fishtraps.screen.FishTrapScreenHandler;
-import com.mojang.serialization.Codec;
-import net.minecraft.block.BlockState;
-import net.minecraft.block.entity.BlockEntity;
-import net.minecraft.enchantment.Enchantment;
-import net.minecraft.enchantment.EnchantmentHelper;
-import net.minecraft.enchantment.Enchantments;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.inventory.Inventories;
-import net.minecraft.inventory.SidedInventory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.loot.LootTable;
-import net.minecraft.loot.context.LootContextParameters;
-import net.minecraft.loot.context.LootContextTypes;
-import net.minecraft.loot.context.LootWorldContext;
-import net.minecraft.particle.ParticleTypes;
-import net.minecraft.registry.Registry;
-import net.minecraft.registry.RegistryKeys;
-import net.minecraft.registry.RegistryKey;
-import net.minecraft.registry.entry.RegistryEntry;
-import net.minecraft.screen.NamedScreenHandlerFactory;
-import net.minecraft.screen.PropertyDelegate;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.state.property.Properties;
-import net.minecraft.storage.ReadView;
-import net.minecraft.storage.WriteView;
-import net.minecraft.text.Text;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.collection.DefaultedList;
-import net.minecraft.util.context.ContextParameterMap;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.World;
-import net.minecraft.server.world.ServerWorld;
-import net.minecraft.fluid.Fluids;
-import com.mojang.serialization.Codec;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.core.Holder;
+import net.minecraft.core.NonNullList;
+import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.Container;
+import net.minecraft.world.ContainerHelper;
+import net.minecraft.world.Containers;
+import net.minecraft.world.MenuProvider;
+import net.minecraft.world.WorldlyContainer;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ContainerData;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.enchantment.Enchantment;
+import net.minecraft.world.item.enchantment.EnchantmentHelper;
+import net.minecraft.world.item.enchantment.Enchantments;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.storage.ValueInput;
+import net.minecraft.world.level.storage.ValueOutput;
+import net.minecraft.world.level.storage.loot.LootParams;
+import net.minecraft.world.level.storage.loot.LootTable;
+import net.minecraft.world.level.storage.loot.parameters.LootContextParamSets;
+import net.minecraft.world.level.storage.loot.parameters.LootContextParams;
+import net.minecraft.world.phys.Vec3;
 
-import java.util.List;
-
-public class FishTrapBlockEntity extends BlockEntity implements SidedInventory, NamedScreenHandlerFactory {
-
-    // Inventory layout: [0]=rod, [1..9]=outputs (3x3)
+public class FishTrapBlockEntity extends BlockEntity implements WorldlyContainer, MenuProvider {
     public static final int SLOT_ROD = 0;
     public static final int OUTPUT_START = 1;
     public static final int OUTPUT_SLOTS = 9;
-    public static final int OUTPUT_END = OUTPUT_START + OUTPUT_SLOTS; // exclusive
+    public static final int OUTPUT_END = OUTPUT_START + OUTPUT_SLOTS;
     public static final int INV_SIZE = OUTPUT_END;
 
-    private static final String NBT_WAIT = "WaitTicks";
-    private static final String NBT_NEXT = "NextCatchTicks";
-    private static final String NBT_OPEN_WATER = "OpenWater";
+    private static final ResourceKey<LootTable> LT_FISH = lootTable("gameplay/fishing/fish");
+    private static final ResourceKey<LootTable> LT_JUNK = lootTable("gameplay/fishing/junk");
+    private static final ResourceKey<LootTable> LT_TREASURE = lootTable("gameplay/fishing/treasure");
+    private static final Component NAME = Component.translatable("container.fishtraps.fish_trap");
 
-    private static final Identifier LT_FISH = Identifier.of("minecraft", "gameplay/fishing/fish");
-    private static final Identifier LT_JUNK = Identifier.of("minecraft", "gameplay/fishing/junk");
-    private static final Identifier LT_TREASURE = Identifier.of("minecraft", "gameplay/fishing/treasure");
+    private final NonNullList<ItemStack> items = NonNullList.withSize(INV_SIZE, ItemStack.EMPTY);
+    private int nextCatchTicks;
+    private int nextCatchTotalTicks;
+    private int bubbleCooldown;
+    private boolean openWater;
+    private int openWaterRecheckCooldown;
 
-    private final DefaultedList<ItemStack> items = DefaultedList.ofSize(INV_SIZE, ItemStack.EMPTY);
-
-    /**
-     * Server-side timer.
-     * nextCatchTicks counts down to 0, then we roll loot and schedule a new cycle.
-     */
-    private int nextCatchTicks = 0;
-    private int nextCatchTotalTicks = 0;
-
-    // Particle pacing (server)
-    private int bubbleCooldown = 0;
-
-    // Synced-ish state (server computes, handler reads)
-    private boolean openWater = false;
-    private int openWaterRecheckCooldown = 0;
-
-    // Screen sync:
-    // 0 = openWater (0/1)
-    // 1 = nextCatchTicks (remaining)
-    // 2 = nextCatchTotalTicks (total)
-    private final PropertyDelegate propertyDelegate = new PropertyDelegate() {
+    private final ContainerData data = new ContainerData() {
         @Override
         public int get(int index) {
             return switch (index) {
@@ -93,14 +71,17 @@ public class FishTrapBlockEntity extends BlockEntity implements SidedInventory, 
 
         @Override
         public void set(int index, int value) {
-            // Client-side values sync from server
-            if (index == 0) openWater = (value != 0);
-            if (index == 1) nextCatchTicks = value;
-            if (index == 2) nextCatchTotalTicks = value;
+            switch (index) {
+                case 0 -> openWater = value != 0;
+                case 1 -> nextCatchTicks = value;
+                case 2 -> nextCatchTotalTicks = value;
+                default -> {
+                }
+            }
         }
 
         @Override
-        public int size() {
+        public int getCount() {
             return 3;
         }
     };
@@ -109,437 +90,274 @@ public class FishTrapBlockEntity extends BlockEntity implements SidedInventory, 
         super(ModBlockEntities.FISH_TRAP, pos, state);
     }
 
-    // ---- TICK ----
-    public static void tick(World world, BlockPos pos, BlockState state, FishTrapBlockEntity be) {
-        if (world.isClient()) return;
+    public static void tick(Level level, BlockPos pos, BlockState state, FishTrapBlockEntity trap) {
+        if (!(level instanceof ServerLevel serverLevel)) return;
 
-        if (!(world instanceof ServerWorld serverWorld)) return;
-
-        // Recheck open-water once per second
-        if (be.openWaterRecheckCooldown <= 0) {
-            boolean newValue = be.computeOpenWater(serverWorld);
-            if (newValue != be.openWater) {
-                be.openWater = newValue;
-                be.markDirty();
+        if (trap.openWaterRecheckCooldown-- <= 0) {
+            boolean newValue = trap.computeOpenWater(serverLevel, state);
+            if (newValue != trap.openWater) {
+                trap.openWater = newValue;
+                trap.setChanged();
             }
-            be.openWaterRecheckCooldown = 20;
-        } else {
-            be.openWaterRecheckCooldown--;
+            trap.openWaterRecheckCooldown = 20;
         }
 
-        boolean running = be.canRun(serverWorld, state);
-
-        // If we're not running, don't burn timers.
-        if (!running) {
-            be.nextCatchTicks = 0;
-            be.nextCatchTotalTicks = 0;
-            be.bubbleCooldown = 0;
+        if (!trap.canRun(state)) {
+            trap.nextCatchTicks = 0;
+            trap.nextCatchTotalTicks = 0;
+            trap.bubbleCooldown = 0;
             return;
         }
 
-        // Schedule a cycle if none is active.
-        if (be.nextCatchTicks <= 0 || be.nextCatchTotalTicks <= 0) {
-            int total = be.rollNextCatchTime(serverWorld);
-            be.nextCatchTotalTicks = total;
-            be.nextCatchTicks = total;
-            be.markDirty();
+        if (trap.nextCatchTicks <= 0 || trap.nextCatchTotalTicks <= 0) {
+            int total = trap.rollNextCatchTime(serverLevel);
+            trap.nextCatchTotalTicks = total;
+            trap.nextCatchTicks = total;
+            trap.setChanged();
         }
 
-        // Particle pacing (visual feedback while running)
-        if (be.bubbleCooldown > 0) {
-            be.bubbleCooldown--;
-        } else {
-            be.spawnBubbles(serverWorld);
-            // more frequent than before so the "working" state is obvious
-            be.bubbleCooldown = 40;
+        if (trap.bubbleCooldown-- <= 0) {
+            trap.spawnBubbles(serverLevel);
+            trap.bubbleCooldown = 40;
         }
 
-        // Progress timer (open water = faster)
-        int step = be.openWater ? 2 : 1;
-        be.nextCatchTicks -= step;
-
-        if (be.nextCatchTicks <= 0) {
-            be.performCatch(serverWorld);
-            // Next cycle will be scheduled on the next tick.
-            be.nextCatchTicks = 0;
-            be.nextCatchTotalTicks = 0;
-            be.markDirty();
+        trap.nextCatchTicks -= trap.openWater ? 2 : 1;
+        if (trap.nextCatchTicks <= 0) {
+            trap.performCatch(serverLevel);
+            trap.nextCatchTicks = 0;
+            trap.nextCatchTotalTicks = 0;
+            trap.setChanged();
         }
+        level.blockEntityChanged(pos);
     }
 
-    private boolean computeOpenWater(ServerWorld world) {
-        BlockState state = world.getBlockState(this.pos);
-
-        // Must be waterlogged (your rule)
-        if (!state.contains(Properties.WATERLOGGED) || !state.get(Properties.WATERLOGGED)) {
-            return false;
-        }
-
-        // 5x5 footprint, must have water at y+1 and y+2
-        return OpenWaterUtil.isTrapOpenWater(world, this.pos);
+    private boolean computeOpenWater(ServerLevel level, BlockState state) {
+        return state.getValueOrElse(FishTrapBlock.WATERLOGGED, false)
+                && OpenWaterUtil.isTrapOpenWater(level, this.worldPosition);
     }
 
-    public PropertyDelegate getPropertyDelegate() {
-        return propertyDelegate;
-    }
-
-    public boolean isOpenWater() {
-        return openWater;
+    private boolean canRun(BlockState state) {
+        return state.getValueOrElse(FishTrapBlock.WATERLOGGED, false)
+                && isFishingRod(this.items.get(SLOT_ROD))
+                && !isOutputFull();
     }
 
     public boolean isOutputFull() {
-        for (int i = OUTPUT_START; i < OUTPUT_END; i++) {
-            if (items.get(i).isEmpty()) return false;
+        for (int slot = OUTPUT_START; slot < OUTPUT_END; slot++) {
+            if (this.items.get(slot).isEmpty()) return false;
         }
         return true;
     }
 
-    // ---- fishing loop ----
-    private boolean canRun(ServerWorld world, BlockState state) {
-        // Must be waterlogged
-        if (!state.contains(Properties.WATERLOGGED) || !state.get(Properties.WATERLOGGED)) return false;
-
-        // Must have a fishing rod
-        ItemStack rod = items.get(SLOT_ROD);
-        if (rod.isEmpty() || !rod.isOf(Items.FISHING_ROD)) return false;
-
-        // Must have output room
-        return !isOutputFull();
-    }
-
-    private int rollNextCatchTime(ServerWorld world) {
-        // Feels vanilla-ish: 60-120 seconds baseline.
-        // Open-water speed-up is handled in tick() by stepping faster.
+    private int rollNextCatchTime(ServerLevel level) {
         int min = 20 * 60;
         int max = 20 * 120;
-
-        ItemStack rod = items.get(SLOT_ROD);
-        int lure = getEnchantmentLevel(rod, Enchantments.LURE);
-        // Each Lure level reduces time by ~10% (clamped)
-        float mult = Math.max(0.4f, 1.0f - (0.10f * lure));
-
-        int base = min + world.getRandom().nextInt(max - min + 1);
-        return Math.max(20, Math.round(base * mult));
+        int lure = getEnchantmentLevel(level, this.items.get(SLOT_ROD), Enchantments.LURE);
+        float multiplier = Math.max(0.4F, 1.0F - 0.10F * lure);
+        int base = min + level.getRandom().nextInt(max - min + 1);
+        return Math.max(20, Math.round(base * multiplier));
     }
 
-    private void performCatch(ServerWorld world) {
+    private void performCatch(ServerLevel level) {
         if (isOutputFull()) return;
+        ItemStack rod = this.items.get(SLOT_ROD);
+        if (!isFishingRod(rod)) return;
 
-        ItemStack rod = items.get(SLOT_ROD);
-        if (rod.isEmpty() || !rod.isOf(Items.FISHING_ROD)) return;
+        ResourceKey<LootTable> tableKey = chooseFishingSubtable(level, rod);
+        LootTable table = level.getServer().reloadableRegistries().getLootTable(tableKey);
+        if (table == LootTable.EMPTY) {
+            FishTraps.LOGGER.warn("Missing fishing loot table {}", tableKey.identifier());
+            return;
+        }
 
-        // Choose which vanilla subtable to roll (fish/junk/treasure) using vanilla-ish probabilities.
-        Identifier tableId = chooseFishingSubtable(world, rod);
-
-        LootTable table = getLootTableSafe(world, tableId);
-        if (table == null) return;
-
-        float luck = getEnchantmentLevel(rod, Enchantments.LUCK_OF_THE_SEA);
-
-        ContextParameterMap params = new ContextParameterMap.Builder()
-                .add(LootContextParameters.ORIGIN, Vec3d.ofCenter(this.pos))
-                .add(LootContextParameters.TOOL, rod)
-                .build(LootContextTypes.FISHING);
-
-        LootWorldContext ctx = new LootWorldContext(world, params, java.util.Map.of(), luck);
-
-        List<ItemStack> loot = table.generateLoot(ctx);
-        if (loot.isEmpty()) return;
+        float luck = getEnchantmentLevel(level, rod, Enchantments.LUCK_OF_THE_SEA);
+        LootParams params = new LootParams.Builder(level)
+                .withParameter(LootContextParams.ORIGIN, Vec3.atCenterOf(this.worldPosition))
+                .withParameter(LootContextParams.TOOL, rod)
+                .withLuck(luck)
+                .create(LootContextParamSets.FISHING);
 
         boolean insertedAny = false;
-
-        // Insert items until we run out of room.
-        for (ItemStack drop : loot) {
-            if (drop == null || drop.isEmpty()) continue;
-            ItemStack copy = drop.copy();
-            if (insertIntoOutputs(copy)) {
-                insertedAny = true;
-            } else {
-                // No more room.
-                break;
-            }
+        for (ItemStack drop : table.getRandomItems(params)) {
+            if (!drop.isEmpty() && insertIntoOutputs(drop.copy())) insertedAny = true;
         }
 
         if (insertedAny) {
-            // Vanilla fishing always consumes durability *sometimes* (Unbreaking affects it).
-            // We also generate "catch XP" and apply it to Mending only (no XP farm).
-            int xp = (tableId.equals(LT_JUNK) ? 0 : (1 + world.getRandom().nextInt(6))); // vanilla: XP only on fish/treasure
-            damageRodAndApplyMending(world, xp);
+            int xp = tableKey.equals(LT_JUNK) ? 0 : 1 + level.getRandom().nextInt(6);
+            damageRodAndApplyMending(level, xp);
         }
     }
 
-
-    /**
-     * Get loot table using standard 1.21.10 API
-     */
-    private LootTable getLootTableSafe(ServerWorld world, Identifier id) {
-        try {
-            var server = world.getServer();
-            if (server == null) return null;
-            
-            RegistryKey<LootTable> key = RegistryKey.of(RegistryKeys.LOOT_TABLE, id);
-            
-            // 1.21.10 direct method
-            var reloadableRegistries = server.getReloadableRegistries();
-            LootTable table = reloadableRegistries.getLootTable(key);
-            
-            if (table == LootTable.EMPTY) {
-                com.tech_monkey.fishtraps.FishTraps.LOGGER.warn("Loot table is EMPTY for key: {}", key);
-                return null;
-            }
-            
-            return table;
-        } catch (Exception e) {
-            com.tech_monkey.fishtraps.FishTraps.LOGGER.error("Exception getting loot table for {}: {}", id, e.getMessage());
-            return null;
-        }
-    }
-
-    private boolean insertIntoOutputs(ItemStack stack) {
-        // First try merge
-        for (int i = OUTPUT_START; i < OUTPUT_END; i++) {
-            ItemStack existing = items.get(i);
-            if (existing.isEmpty()) continue;
-            if (ItemStack.areItemsAndComponentsEqual(existing, stack)) {
-                int space = existing.getMaxCount() - existing.getCount();
-                if (space <= 0) continue;
-
-                int move = Math.min(space, stack.getCount());
-                existing.increment(move);
-                stack.decrement(move);
-                if (stack.isEmpty()) {
-                    markDirty();
-                    return true;
-                }
-            }
-        }
-
-        // Then empty slot
-        for (int i = OUTPUT_START; i < OUTPUT_END; i++) {
-            if (items.get(i).isEmpty()) {
-                items.set(i, stack);
-                markDirty();
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private Identifier chooseFishingSubtable(ServerWorld world, ItemStack rod) {
-        // Vanilla baseline (unenchanted): Fish 85%, Junk 10%, Treasure 5%.
-        // Luck of the Sea shifts probability from Fish/Junk into Treasure (about +2% treasure per level).
-        // Treasure is only possible in Open Water.
-        int luckLvl = getEnchantmentLevel(rod, Enchantments.LUCK_OF_THE_SEA);
-
-        float treasureChance = this.openWater ? (0.05f + (0.02f * luckLvl)) : 0.0f;
-        float junkChance = 0.10f - (0.02f * luckLvl);
-
-        // When treasure is disabled (not open water), vanilla still gives fish/junk only.
-        // Keep junk in a sensible vanilla-ish range.
-        junkChance = Math.max(0.0f, junkChance);
-
-        // Clamp so we never go negative / exceed 100%
-        treasureChance = Math.min(treasureChance, 0.60f);
-        junkChance = Math.min(junkChance, 0.60f);
-
-        float roll = world.getRandom().nextFloat();
+    private ResourceKey<LootTable> chooseFishingSubtable(ServerLevel level, ItemStack rod) {
+        int luck = getEnchantmentLevel(level, rod, Enchantments.LUCK_OF_THE_SEA);
+        float treasureChance = this.openWater ? Math.min(0.05F + 0.02F * luck, 0.60F) : 0.0F;
+        float junkChance = Math.min(Math.max(0.10F - 0.02F * luck, 0.0F), 0.60F);
+        float roll = level.getRandom().nextFloat();
         if (roll < treasureChance) return LT_TREASURE;
         if (roll < treasureChance + junkChance) return LT_JUNK;
         return LT_FISH;
     }
 
-    private void damageRodAndApplyMending(ServerWorld world, int catchXp) {
-        ItemStack rod = items.get(SLOT_ROD);
-        if (rod.isEmpty()) return;
-        if (!rod.isDamageable()) return;
+    private boolean insertIntoOutputs(ItemStack stack) {
+        for (int slot = OUTPUT_START; slot < OUTPUT_END && !stack.isEmpty(); slot++) {
+            ItemStack existing = this.items.get(slot);
+            if (!existing.isEmpty() && ItemStack.isSameItemSameComponents(existing, stack)) {
+                int moved = Math.min(stack.getCount(), existing.getMaxStackSize() - existing.getCount());
+                if (moved > 0) {
+                    existing.grow(moved);
+                    stack.shrink(moved);
+                }
+            }
+        }
+        for (int slot = OUTPUT_START; slot < OUTPUT_END && !stack.isEmpty(); slot++) {
+            if (this.items.get(slot).isEmpty()) {
+                this.items.set(slot, stack.split(stack.getMaxStackSize()));
+            }
+        }
+        this.setChanged();
+        return stack.isEmpty();
+    }
 
-        // ---- Durability consumption (Unbreaking) ----
-        int unbreaking = getEnchantmentLevel(rod, Enchantments.UNBREAKING);
-        boolean consume = unbreaking <= 0 || world.getRandom().nextInt(unbreaking + 1) == 0;
+    private void damageRodAndApplyMending(ServerLevel level, int catchXp) {
+        ItemStack rod = this.items.get(SLOT_ROD);
+        if (!rod.isDamageableItem()) return;
 
-        if (consume) {
-            int newDamage = rod.getDamage() + 1;
-            rod.setDamage(newDamage);
-
-            // If it breaks, remove it and stop.
-            if (rod.getDamage() >= rod.getMaxDamage()) {
-                items.set(SLOT_ROD, ItemStack.EMPTY);
-                markDirty();
+        int unbreaking = getEnchantmentLevel(level, rod, Enchantments.UNBREAKING);
+        if (unbreaking <= 0 || level.getRandom().nextInt(unbreaking + 1) == 0) {
+            rod.setDamageValue(rod.getDamageValue() + 1);
+            if (rod.isBroken()) {
+                this.items.set(SLOT_ROD, ItemStack.EMPTY);
+                this.setChanged();
                 return;
             }
         }
 
-        // ---- Mending behavior (NO XP farm) ----
-        // Any XP from a catch is applied ONLY to the rod if it has Mending.
-        // If the rod is fully repaired (or doesn't need repair), the XP is discarded.
-        int mending = getEnchantmentLevel(rod, Enchantments.MENDING);
-        if (mending > 0 && catchXp > 0 && rod.getDamage() > 0) {
-            // In vanilla: 2 durability per 1 xp
-            int repair = Math.min(rod.getDamage(), catchXp * 2);
-            rod.setDamage(rod.getDamage() - repair);
-            // leftover XP intentionally destroyed
+        int mending = getEnchantmentLevel(level, rod, Enchantments.MENDING);
+        if (mending > 0 && catchXp > 0 && rod.isDamaged()) {
+            rod.setDamageValue(Math.max(0, rod.getDamageValue() - catchXp * 2));
         }
-
-        markDirty();
+        this.setChanged();
     }
 
-
-private void spawnBubbles(ServerWorld world) {
-    double x = this.pos.getX() + 0.5;
-    double z = this.pos.getZ() + 0.5;
-    double y = this.pos.getY() + 0.9;
-    
-    // Use BUBBLE_COLUMN_UP for a natural rising column (like soul sand)
-    // Spawn fewer particles than magma/soul sand for subtlety
-    world.spawnParticles(
-        ParticleTypes.BUBBLE_COLUMN_UP,
-        x, y, z,
-        3,                    // Just 2 particles (magma uses way more)
-        0.2, 0.0, 0.2,       // Slight horizontal scatter
-        0.0
-    );
-}
-
-    private static int getEnchantmentLevel(ItemStack stack, net.minecraft.registry.RegistryKey<Enchantment> key) {
-        // 1.21+ stores enchantments as RegistryEntry<Enchantment> -> level inside the stack components.
-        // We avoid registry lookups entirely by matching the RegistryKey on each entry.
-        var ench = stack.getEnchantments();
-        for (var e : ench.getEnchantmentEntries()) {
-            var entry = e.getKey();
-            var kOpt = entry.getKey();
-            if (kOpt.isPresent() && kOpt.get().equals(key)) {
-                return e.getIntValue();
-            }
-        }
-        return 0;
+    private static int getEnchantmentLevel(ServerLevel level, ItemStack stack,
+                                           ResourceKey<Enchantment> enchantmentKey) {
+        Holder<Enchantment> enchantment = level.registryAccess()
+                .lookupOrThrow(Registries.ENCHANTMENT)
+                .getOrThrow(enchantmentKey);
+        return EnchantmentHelper.getItemEnchantmentLevel(enchantment, stack);
     }
 
-    // ---- GUI ----
-    @Override
-    public Text getDisplayName() {
-        return Text.translatable("container.fishtraps.fish_trap");
+    private void spawnBubbles(ServerLevel level) {
+        level.sendParticles(ParticleTypes.BUBBLE_COLUMN_UP,
+                this.worldPosition.getX() + 0.5,
+                this.worldPosition.getY() + 0.9,
+                this.worldPosition.getZ() + 0.5,
+                3, 0.2, 0.0, 0.2, 0.0);
+    }
+
+    private static boolean isFishingRod(ItemStack stack) {
+        return !stack.isEmpty() && stack.getItem() == Items.FISHING_ROD;
+    }
+
+    private static ResourceKey<LootTable> lootTable(String path) {
+        return ResourceKey.create(Registries.LOOT_TABLE, Identifier.withDefaultNamespace(path));
     }
 
     @Override
-    public ScreenHandler createMenu(int syncId, PlayerInventory playerInventory, PlayerEntity player) {
-        return new FishTrapScreenHandler(syncId, playerInventory, this, this.propertyDelegate);
+    protected void loadAdditional(ValueInput input) {
+        super.loadAdditional(input);
+        ContainerHelper.loadAllItems(input, this.items);
+        this.openWater = input.getBooleanOr("OpenWater", false);
+        this.nextCatchTicks = input.getIntOr("NextCatchTicks", 0);
+        this.nextCatchTotalTicks = input.getIntOr("WaitTicks", 0);
     }
 
-    // ---- Inventory ----
-    @Override public int size() { return items.size(); }
+    @Override
+    protected void saveAdditional(ValueOutput output) {
+        super.saveAdditional(output);
+        ContainerHelper.saveAllItems(output, this.items);
+        output.putBoolean("OpenWater", this.openWater);
+        output.putInt("NextCatchTicks", this.nextCatchTicks);
+        output.putInt("WaitTicks", this.nextCatchTotalTicks);
+    }
+
+    @Override
+    public void preRemoveSideEffects(BlockPos pos, BlockState state) {
+        if (this.level != null) Containers.dropContents(this.level, pos, this);
+    }
+
+    @Override
+    public Component getDisplayName() {
+        return NAME;
+    }
+
+    @Override
+    public AbstractContainerMenu createMenu(int containerId, Inventory inventory, Player player) {
+        return new FishTrapScreenHandler(containerId, inventory, this, this.data);
+    }
+
+    @Override
+    public int getContainerSize() {
+        return this.items.size();
+    }
 
     @Override
     public boolean isEmpty() {
-        for (ItemStack stack : items) if (!stack.isEmpty()) return false;
-        return true;
+        return this.items.stream().allMatch(ItemStack::isEmpty);
     }
 
-    @Override public ItemStack getStack(int slot) { return items.get(slot); }
+    @Override
+    public ItemStack getItem(int slot) {
+        return this.items.get(slot);
+    }
 
     @Override
-    public ItemStack removeStack(int slot, int amount) {
-        ItemStack result = Inventories.splitStack(items, slot, amount);
-        if (!result.isEmpty()) markDirty();
+    public ItemStack removeItem(int slot, int amount) {
+        ItemStack result = ContainerHelper.removeItem(this.items, slot, amount);
+        if (!result.isEmpty()) this.setChanged();
         return result;
     }
 
     @Override
-    public ItemStack removeStack(int slot) {
-        ItemStack result = Inventories.removeStack(items, slot);
-        if (!result.isEmpty()) markDirty();
-        return result;
+    public ItemStack removeItemNoUpdate(int slot) {
+        return ContainerHelper.takeItem(this.items, slot);
     }
 
     @Override
-    public void setStack(int slot, ItemStack stack) {
-        items.set(slot, stack);
-        if (!stack.isEmpty() && stack.getCount() > stack.getMaxCount()) {
-            stack.setCount(stack.getMaxCount());
-        }
-        markDirty();
+    public void setItem(int slot, ItemStack stack) {
+        this.items.set(slot, stack);
+        if (stack.getCount() > stack.getMaxStackSize()) stack.setCount(stack.getMaxStackSize());
+        this.setChanged();
     }
 
-    @Override public void clear() { items.clear(); markDirty(); }
-
     @Override
-    public boolean canPlayerUse(PlayerEntity player) {
-        return this.world != null
-                && this.world.getBlockEntity(this.pos) == this
-                && player.squaredDistanceTo(
-                this.pos.getX() + 0.5D,
-                this.pos.getY() + 0.5D,
-                this.pos.getZ() + 0.5D
-        ) <= 64.0D;
+    public boolean stillValid(Player player) {
+        return Container.stillValidBlockEntity(this, player);
     }
 
-    // ---- Hopper behavior ----
     @Override
-    public int[] getAvailableSlots(Direction side) {
+    public void clearContent() {
+        this.items.clear();
+        this.setChanged();
+    }
+
+    @Override
+    public int[] getSlotsForFace(Direction side) {
         if (side == Direction.DOWN) {
-            int[] out = new int[OUTPUT_SLOTS];
-            for (int i = 0; i < OUTPUT_SLOTS; i++) out[i] = OUTPUT_START + i;
-            return out;
+            int[] slots = new int[OUTPUT_SLOTS];
+            for (int index = 0; index < OUTPUT_SLOTS; index++) slots[index] = OUTPUT_START + index;
+            return slots;
         }
-
         return new int[]{SLOT_ROD};
     }
 
     @Override
-    public boolean canInsert(int slot, ItemStack stack, Direction dir) {
-        // hoppers should NOT feed the trap (rod insertion is GUI/player-only).
+    public boolean canPlaceItemThroughFace(int slot, ItemStack stack, Direction side) {
         return false;
     }
 
     @Override
-    public boolean canExtract(int slot, ItemStack stack, Direction dir) {
-        if (dir != Direction.DOWN) return false;
-        return slot >= OUTPUT_START;
-    }
-
-    // ---- Persistence (1.21+ ReadView/WriteView) ----
-    @Override
-    protected void readData(ReadView view) {
-        this.openWater = view.getBoolean(NBT_OPEN_WATER, false);
-        this.nextCatchTicks = view.getInt(NBT_NEXT, 0);
-        this.nextCatchTotalTicks = view.getInt(NBT_WAIT, 0); // reuse old key to avoid breaking older worlds
-
-        // Clear inventory
-        for (int i = 0; i < this.items.size(); i++) {
-            this.items.set(i, ItemStack.EMPTY);
-        }
-
-        // Items are stored as two parallel lists: Slots (int) and Items (ItemStack).
-        // This avoids writing minecraft:air stacks, which 1.21+ rejects.
-        var slotsView = view.getOptionalTypedListView("Slots", Codec.INT).orElse(null);
-        var itemsView = view.getOptionalTypedListView("Items", ItemStack.CODEC).orElse(null);
-
-        if (slotsView != null && itemsView != null) {
-            var slotIt = slotsView.iterator();
-            var itemIt = itemsView.iterator();
-            while (slotIt.hasNext() && itemIt.hasNext()) {
-                Integer slot = slotIt.next();
-                ItemStack stack = itemIt.next();
-                if (slot == null) continue;
-                if (slot < 0 || slot >= this.items.size()) continue;
-                this.items.set(slot, (stack == null) ? ItemStack.EMPTY : stack);
-            }
-        }
-    }
-
-    @Override
-    protected void writeData(WriteView view) {
-        view.putBoolean(NBT_OPEN_WATER, this.openWater);
-        view.putInt(NBT_NEXT, this.nextCatchTicks);
-        view.putInt(NBT_WAIT, this.nextCatchTotalTicks);
-
-        var slots = view.getListAppender("Slots", Codec.INT);
-        var stacks = view.getListAppender("Items", ItemStack.CODEC);
-
-        for (int i = 0; i < this.items.size(); i++) {
-            ItemStack stack = this.items.get(i);
-            if (stack == null || stack.isEmpty()) continue; 
-            slots.add(i);
-            stacks.add(stack);
-        }
+    public boolean canTakeItemThroughFace(int slot, ItemStack stack, Direction side) {
+        return side == Direction.DOWN && slot >= OUTPUT_START;
     }
 }
