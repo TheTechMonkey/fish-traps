@@ -8,6 +8,7 @@
   "authors": ["tech_monkey"],
 
   "license": "MIT",
+  "icon": "assets/fishtraps/icon.png",
   "environment": "*",
 
   "entrypoints": {
