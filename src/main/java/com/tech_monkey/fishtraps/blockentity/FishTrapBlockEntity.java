@@ -121,7 +121,15 @@ public class FishTrapBlockEntity extends BlockEntity implements WorldlyContainer
             trap.bubbleCooldown = 40;
         }
 
-        trap.nextCatchTicks -= trap.openWater ? 2 : 1;
+        int countdownRate = 1;
+        BlockPos aboveTrap = pos.above();
+        if (serverLevel.getRandom().nextFloat() < 0.25F && serverLevel.isRainingAt(aboveTrap)) {
+            countdownRate++;
+        }
+        if (serverLevel.getRandom().nextFloat() < 0.5F && !serverLevel.canSeeSky(aboveTrap)) {
+            countdownRate--;
+        }
+        trap.nextCatchTicks -= countdownRate;
         if (trap.nextCatchTicks <= 0) {
             trap.performCatch(serverLevel);
             trap.nextCatchTicks = 0;
@@ -150,12 +158,10 @@ public class FishTrapBlockEntity extends BlockEntity implements WorldlyContainer
     }
 
     private int rollNextCatchTime(ServerLevel level) {
-        int min = 20 * 60;
-        int max = 20 * 120;
+        int waitTicks = 100 + level.getRandom().nextInt(501);
         int lure = getEnchantmentLevel(level, this.items.get(SLOT_ROD), Enchantments.LURE);
-        float multiplier = Math.max(0.4F, 1.0F - 0.10F * lure);
-        int base = min + level.getRandom().nextInt(max - min + 1);
-        return Math.max(20, Math.round(base * multiplier));
+        int approachTicks = 20 + level.getRandom().nextInt(61);
+        return Math.max(0, waitTicks - lure * 100) + approachTicks;
     }
 
     private void performCatch(ServerLevel level) {

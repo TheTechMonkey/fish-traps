@@ -3,8 +3,9 @@
 Automated fishing traps for Minecraft 26.3 using Fabric.
 
 Place a fish trap in water, insert a fishing rod, and let it collect fish, junk,
-and treasure. Open water doubles the trap's speed and allows treasure catches.
-Fishing-rod enchantments affect catch speed, loot quality, durability, and repair.
+and treasure. Open water allows treasure catches. Capture timing follows vanilla
+fishing, including Lure, rain, and sky-access effects. Fishing-rod enchantments
+also affect loot quality, durability, and repair.
 
 ## Requirements
 
